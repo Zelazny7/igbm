@@ -1,19 +1,19 @@
 from sklearn.base import BaseEstimator, TransformerMixin
-from typing import NewType, Dict, List, Set, Union, Tuple, Callable
+from typing import List, Tuple, Callable
 from abc import ABC, abstractmethod
 import numpy as np
+import pandas as pd
 
 
 class Relationship(ABC):
     __priority = 0
-    has_mono = False
 
     def __init__(self, order, rc):
         self.order = order
         self.rc = rc
 
     @abstractmethod
-    def get_filter(self, X):
+    def get_filter(self, x):
         pass
 
     @property
@@ -48,10 +48,10 @@ class Interval(Relationship):
         self.ul = ul
         self.bounds = bounds
 
-    def get_filter(self, X):
-        nan = np.isnan(X)
-        lf = interval_filter(X, self.ll, self.bounds[0], "left")
-        rf = interval_filter(X, self.ul, self.bounds[1], "right")
+    def get_filter(self, x):
+        nan = np.isnan(x)
+        lf = interval_filter(x, self.ll, self.bounds[0], "left")
+        rf = interval_filter(x, self.ul, self.bounds[1], "right")
         return lf & rf & ~nan
 
     def __str__(self):
@@ -65,8 +65,8 @@ class SingleValue(Relationship):
         super().__init__(order, rc)
         self.value = value
 
-    def get_filter(self, X):
-        return X == self.value
+    def get_filter(self, x):
+        return x == self.value
 
     def __str__(self):
         return "Single Value"
@@ -77,8 +77,8 @@ class Missing(Relationship):
     def __init__(self, order: int = 0, rc: str = ""):
         super().__init__(order, rc)
 
-    def get_filter(self, X):
-        return np.isnan(X)
+    def get_filter(self, x):
+        return np.isnan(x)
 
     def __str__(self):
         return "Missing"
@@ -88,21 +88,43 @@ class Missing(Relationship):
 # return a tuple of array, mono
 def _reorder_mono_none(x: np.ndarray, interval: Interval, rels: List[Relationship]) -> \
         Tuple[np.ndarray, List[int]]:
-    x1, _ = _reorder_mono_dec(x, interval, rels)
-    x2, _ = _reorder_mono_inc(x, interval, rels)
 
-    return np.concatenate([x1, x2]), [1, 2]
+    x1, m1 = _reorder_mono(x, interval, rels)
+    x2, m2 = _reorder_mono(x, interval, rels)
+
+    return np.hstack([x1, x2]), m1 + m2
 
 
-def _reorder_mono_inc(x: np.ndarray, interval: Interval, rels: List[Relationship]) -> \
+def _reorder_mono(x: np.ndarray, interval: Interval, rels: List[Relationship]) -> \
         Tuple[np.ndarray, List[int]]:
 
-    pass
+    res = np.zeros_like(x)
+    prev = np.array([False])
 
+    rev = True if interval.mono == -1 else False
+    sorted_rels = sorted(rels, key=lambda r: (r.priority, r.order), reverse=rev)
 
-def _reorder_mono_dec(x: np.ndarray,  interval: Interval, rels: List[Relationship]) -> \
-        Tuple[np.ndarray, List[int]]:
-    pass
+    # get index of the interval in the relationships
+    idx = sorted_rels.index(interval)
+    ll, ul = int(interval.ll), int(interval.ul)
+    vals = list(range(ll - idx, ll)) + list(range(ul + 1, ul + len(sorted_rels) - idx))
+    print(vals)
+
+    pos = 0
+    for rel in sorted_rels:
+        f = rel.get_filter(x) & ~prev
+
+        # apply the mask to the vector
+        if rel == interval:
+            res[f] = x[f]
+        else:
+            res[f] = vals[pos]
+            pos += 1
+
+        # update the mask with the newest filter
+        prev = prev | f
+
+    return res.reshape((-1, 2)), [interval.mono]
 
 
 class RelationshipMapper(BaseEstimator, TransformerMixin):
@@ -123,14 +145,28 @@ class RelationshipMapper(BaseEstimator, TransformerMixin):
         # do checks here
         pass
 
+    def transform_refactor(self, x: np.ndarray) -> Tuple[np.ndarray, List[int]]:
+
+        intervals = [x for x in self.rels if isinstance(x, Interval)]
+
+        res, mono = ([], [])
+        for i in intervals:
+            if i.mono == 0:
+                tmp, m = _reorder_mono_none(x, i, self.rels)
+            else:
+                tmp, m = _reorder_mono(x, i, self.rels)
+            res += [tmp]
+            mono += m
+
+        return np.vstack(res), mono
+
+
     def transform(self, X: np.ndarray) -> np.ndarray:
         """
         :param X: A numpy array-like object
         :return: A transformed numpy array with the same number of rows as X
         the dimension of the array is (x.shape[0], # Interval rules)
         """
-        # if only one mono, simply rearrange the elements
-        # TODO: dispatch based on monotonicity, pass in intervals and rels
 
         intervals = [x for x in self.rels if isinstance(x, Interval)]
         res = np.zeros((X.shape[0], len(intervals)))
@@ -151,7 +187,7 @@ class RelationshipMapper(BaseEstimator, TransformerMixin):
                     f = rel.get_filter(X) & ~prev
 
                     # apply the mask to the vector
-                    res[f,i] = rel.order if not rel == interval else X[f]
+                    res[f, i] = rel.order if not rel == interval else X[f]
 
                     # update the mask with the newest filter
                     prev = prev | f
@@ -167,22 +203,21 @@ class RelationshipMapper(BaseEstimator, TransformerMixin):
 
 if __name__ == '__main__':
 
-    rels = [
-        Interval(order=99, ll=2, ul=3, bounds="[]"),
-        Interval(order=999, ll=3, ul=400, bounds="(]"),
-        SingleValue(value=400, order=100),
+    rm = RelationshipMapper([
+        Interval(order=99, ll=10, ul=20, bounds="[]"),
+        Interval(order=999, ll=21, ul=400, bounds="(]", mono=0),
+        SingleValue(value=-1, order=100),
         Missing(order=-5)
-    ]
+    ])
+
+    z = np.array([-1, 2, 3, 10, 20, 30, 40, np.nan, 400, 2])
+    # print(Interval(order=3).get_filter(x))
+    y = rm.transform_refactor(z)
+
+    print(z)
+    print(pd.DataFrame(y[0]))
 
 
-    rm = RelationshipMapper(rels)
+    # print(np.concatenate([np.reshape(z, (-1, 1)), y], axis=1))
 
-    x = np.array([-1, 2, 3, np.nan, 400, 2])
-
-    #print(Interval(order=3).get_filter(x))
-
-    y = rm.transform(x)
-    print(np.concatenate([np.reshape(x, (-1,1)),y], axis=1))
-
-
-    #rm = RelationshipMapper(rels=None)
+    # rm = RelationshipMapper(rels=None)

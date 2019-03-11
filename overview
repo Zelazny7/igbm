@@ -1,0 +1,64 @@
+The purpose of this package is to allow shape constraints for GBDT models
+
+To implement this behavior the user must be able to specify relationships among
+values of an input variable and the target variable
+
+These relationships can be relative to each other:
+
+  -1 must always be higher than nan, for example
+
+And they can be absolute w.r.t. to the target:
+
+  -1 must always be the highest followed by nan, followed by the rest
+
+Further, the user should be able to specify that certain intervals are
+monotonic for
+
+nan, -99, -1, 0 to 10, 11 to 20, 999
+
+     nan: < -1
+     -99: highest
+      -1: < 0 to 10
+ 0 to 10: mono inc
+11 to 20: mono dec
+     999: lowest
+
+How to rearrange these?
+
+Step 1
+Map these to real values, considering on range at a time
+
+999
+nan
+-1
+0 to 10  : get the min/max of target range
+11 to 20
+-99
+
+Step 2
+
+Considering range 0 to 10
+min: 0, max: 10
+
+renumber values around the actual range
+
+-3: 999
+-2: nan
+-1: -1
+0 to 10
+11 to 20: 11
+-99: 12
+
+
+y:  0,  1,  2, 3.....4,  5,  6
+x: -3, -2, -1, 0 to 10, 11, 12
+
+## simply reverse the values?
+y:  0,  1,  2, 4.....3,  5,  6
+x: -3, -2, -1, 0 to 10, 11, 12
+
+
+
+
+
+
