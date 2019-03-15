@@ -154,6 +154,10 @@ class Blueprint:
     def __iter__(self):
         return iter(self.constraints)
 
+    def __str__(self):
+        # TODO: Need to add print method here to include monotonicity
+        pass
+
 
 class Constrainer(BaseEstimator, TransformerMixin):
     """Constrainer class that transforms vector into features for constrained learning"""
