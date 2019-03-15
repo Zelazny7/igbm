@@ -1,9 +1,9 @@
 import numpy as np
 from typing import *
 from sklearn.base import BaseEstimator, TransformerMixin
-from functools import reduce
+from sklearn.utils import check_array
 from abc import ABC, abstractmethod
-
+from util import indices
 
 class Constraint(ABC):
     def __init__(self, order: int):
@@ -11,12 +11,30 @@ class Constraint(ABC):
 
     @abstractmethod
     def get_filter(self, x: Iterable) -> np.ndarray:
+        """Return boolean numpy array where constraint is satisfied for input iterable x
+
+        :param Iterable x: an iterable that can be coerced to a numpy array
+        :returns np.ndarray: with dtype np.bool
+        """
         pass
 
 
 class Interval(Constraint, ABC):
-    """Base class and factory for interval constraints"""
-    def __new__(cls, ll: float, ul: float, left_open: bool, right_open: bool, mono: int, order: int):
+    """Base class and factory for interval constraints
+
+    :param float ll: Lower limit of interval
+    :param float ul: Upper limit of interval
+    :param bool left_open: If True the left side of the interval is open
+    :param bool right_open: If True the right side of the interval is open
+    :param int mono: Monotonicity constraint of the interval in {-1,0,1}
+    :param int order: Absolute ordering w.r.t. target variable treatment
+    """
+    def __new__(cls, ll: float, ul: float, left_open: bool, right_open: bool,
+                mono: int = 0, order: int = 0):
+
+        if mono not in {-1, 0, 1}:
+            raise ValueError(f"Invalid argument mono: {mono}")
+
         if left_open:
             if right_open:
                 obj = super(Interval, cls).__new__(IntervalOO)
@@ -36,44 +54,52 @@ class Interval(Constraint, ABC):
     def __init__(self, ll: float, ul: float, left_open: bool, right_open: bool, mono: int, order: int):
         super().__init__(order)
 
-    def get_filter(self, x: Iterable) -> np.ndarray:
-        return ~np.isnan(x)
+    def get_filter(self, x: Iterable):
+        raise NotImplementedError()
+
+    @property
+    def limits(self):
+        return self.ll, self.ul
 
 
 class IntervalOO(Interval):
     def __str__(self):
-        return f"({self.ll}, {self.ul}) => {self.order}"
+        rng = f"({self.ll}, {self.ul})"
+        return f"{self.order:5} | {rng:<20}"
 
     def get_filter(self, x: Iterable) -> np.ndarray:
-        mask = super().get_filter(x)
-        return np.greater(x, self.ll, where=mask) & np.less(x, self.ul, where=mask)
+        z = np.ma.masked_invalid(x)
+        return np.ma.filled(np.ma.greater(z, self.ll) & np.ma.less(z, self.ul), False)
 
 
 class IntervalOC(Interval):
     def __str__(self):
-        return f"({self.ll}, {self.ul}] => {self.order}"
+        rng = f"({self.ll}, {self.ul}]"
+        return f"{self.order:5} | {rng:<20}"
 
     def get_filter(self, x: Iterable) -> np.ndarray:
-        mask = super().get_filter(x)
-        return np.greater(x, self.ll, where=mask) & np.less_equal(x, self.ul, where=mask)
+        z = np.ma.masked_invalid(x)
+        return np.ma.filled(np.ma.greater(z, self.ll) & np.ma.less_equal(z, self.ul), False)
 
 
 class IntervalCO(Interval):
     def __str__(self):
-        return f"[{self.ll}, {self.ul}) => {self.order}"
+        rng = f"[{self.ll}, {self.ul})"
+        return f"{self.order:5} | {rng:<20}"
 
     def get_filter(self, x: Iterable) -> np.ndarray:
-        mask = super().get_filter(x)
-        return np.greater_equal(x, self.ll, where=mask) & np.less(x, self.ul, where=mask)
+        z = np.ma.masked_invalid(x)
+        return np.ma.filled(np.ma.greater_equal(z, self.ll) & np.ma.less(z, self.ul), False)
 
 
 class IntervalCC(Interval):
     def __str__(self):
-        return f"[{self.ll}, {self.ul}] => {self.order}"
+        rng = f"[{self.ll}, {self.ul}]"
+        return f"{self.order:5} | {rng:<20}"
 
     def get_filter(self, x: Iterable) -> np.ndarray:
-        mask = super().get_filter(x)
-        return np.greater_equal(x, self.ll, where=mask) & np.less_equal(x, self.ul, where=mask)
+        z = np.ma.masked_invalid(x)
+        return np.ma.filled(np.ma.greater_equal(z, self.ll) & np.ma.less_equal(z, self.ul), False)
 
 
 class Value(Constraint):
@@ -87,7 +113,7 @@ class Value(Constraint):
         return x == self.value
 
     def __str__(self):
-        return f"Value: {self.value} => {self.order}"
+        return f"{self.order:5} | {f'Value: {self.value}':<20}"
 
 
 class Missing(Constraint):
@@ -100,13 +126,41 @@ class Missing(Constraint):
         return np.isnan(x)
 
     def __str__(self):
-        return f"Missing => {self.order}"
+        return f"{self.order:5} | {f'Missing: ':<20}"
+
+
+class FittedConstraint:
+    """store constraint and the value it should map to after fitting"""
+
+    def __init__(self, constraint, value: Optional[float]):
+        self.constraint = constraint
+        self.value = value
+
+    def __str__(self):
+        return f"{str(self.constraint)} => {self.value}"
+
+    def transform(self, X: np.ndarray, result: np.ndarray) -> np.ndarray:
+        replace = X if self.value is None else self.value
+        # make sure to only update output vector where filter is true AND result == np.nan
+        f = self.constraint.get_filter(X) & np.isnan(result)
+        return np.where(f, replace, result)
+
+
+class Blueprint:
+    def __init__(self, constraints: List[FittedConstraint], mono: Optional[int]):
+        self.constraints = constraints
+        self.mono = mono
+
+    def __iter__(self):
+        return iter(self.constraints)
 
 
 class Constrainer(BaseEstimator, TransformerMixin):
+    """Constrainer class that transforms vector into features for constrained learning"""
 
     def __init__(self, constraints: List[Constraint]):
         self.constraints = constraints
+        self.blueprint: List[List[FittedConstraint]] = list()
 
     def __str__(self):
         strings = [str(m) for m in self.constraints]
@@ -116,16 +170,102 @@ class Constrainer(BaseEstimator, TransformerMixin):
         # Align based on =>
         return "\n".join([" " * (max_pos - i) + s for s, i in zip(strings, pos)])
 
+    @property
+    def intervals(self) -> List[Interval]:
+        return [i for i in self.constraints if isinstance(i, Interval)]
+
+    def order(self, desc=False):
+        mul = -1 if desc else 1
+        return indices([x.order * mul for x in self.constraints])
+
+    def fit_interval(self, interval: Interval) -> List[Blueprint]:
+        # each interval generates two vectors with different monotonicities
+        if interval.mono == 0:
+            monos = (1, -1)
+        elif interval.mono == 1:
+            monos = (1, 1)
+        else:
+            monos = (-1, -1)
+
+        out = []
+        for mi, mono in enumerate(monos):
+            order = self.order(desc=False if mono == 1 else True)
+            ll, ul = interval.limits
+
+            # need the index order of the current interval not the original order
+            pos = self.constraints.index(interval)
+            i = order[pos]
+
+            # this sets what the value of the mapping will be based on
+            # where the current interval index is and the relative positions
+            # of the other constraints
+            vals = list()
+            for j in order:
+                if j < i:
+                    vals.append(ll - 1 - (i - j))
+                elif j == i:
+                    if mi == 0:
+                        vals.append(ll - 1)
+                    else:
+                        vals.append(ul + 1)
+                else:
+                    vals.append(ul + 1 - (i - j))
+
+            # current interval gets None value to signal pass-through predictions
+            vals[pos] = None
+
+            bp = [FittedConstraint(con, val) for (con, val) in zip(self.constraints, vals)]
+            out.append(Blueprint(bp, mono))
+
+        return out
+
+
+    def fit(self, X):
+        self.blueprint.clear()
+        check_array(X, accept_sparse=False, force_all_finite=False)
+
+        intervals = self.intervals
+
+        # check if there are interval constraints
+        if len(intervals) > 0:
+            for interval in intervals:
+                self.blueprint += self.fit_interval(interval)
+        else:
+            bp = []
+            for con, val in zip(self.constraints, self.order()):
+                bp.append(FittedConstraint(con, val))
+            self.blueprint += [Blueprint(bp, None)]
+
+        return self
+
+    def transform(self, X):
+        out = []
+        for bp in self.blueprint:
+            # start with a vector of np.nan to fill with the transformed results
+            res = np.full_like(X, np.nan)
+            for cons in bp:
+                print(cons)
+                res = cons.transform(X, res)
+            out.append(res.reshape(-1, 1))
+
+        out = np.hstack(out)
+        check_array(out, accept_sparse=False, force_all_finite=False)
+        return out
 
 
 if __name__ == '__main__':
-    u = Missing(0)
-    v = Value(-1, 0)
+    u = Missing(3)
+    v = Value(-1, 4)
+    w = Interval(-1, 10, False, False, 0, 2)
+    x = Interval(10, 20, True, True, 0, 2)
 
-    w = Interval(1.0, 10.0, True, True, 0, 0)
-    x = Interval(1.0, 10.0, True, False, 0, 0)
-    y = Interval(1.0, 10.0, False, True, 0, 0)
-    z = Interval(1.0, 10.0, False, False, 0, 0)
+    print(type(w.get_filter([1, 10])))
 
-    tf = Constrainer([u, v, w, x, y, z])
-    print(tf)
+    tf = Constrainer([u, v, w, x])
+    z = np.arange(-1, 20, 1, dtype=np.float)
+    z = np.concatenate([z, [np.nan]]).reshape(-1,1)
+    tf.fit(z)
+    print(np.hstack([z, tf.transform(z)]))
+    # tf._generate_blueprint()
+    #print(tf.fit_transform(z))
+
