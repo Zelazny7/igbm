@@ -1,9 +1,10 @@
 import numpy as np
-from typing import *
+from typing import Iterable, Any, Optional, List
 from sklearn.base import BaseEstimator, TransformerMixin
 from sklearn.utils import check_array
 from abc import ABC, abstractmethod
 from util import indices
+
 
 class Constraint(ABC):
     def __init__(self, order: int):
@@ -11,7 +12,8 @@ class Constraint(ABC):
 
     @abstractmethod
     def get_filter(self, x: Iterable) -> np.ndarray:
-        """Return boolean numpy array where constraint is satisfied for input iterable x
+        """Return boolean numpy array where constraint is satisfied for input
+           iterable x
 
         :param Iterable x: an iterable that can be coerced to a numpy array
         :returns np.ndarray: with dtype np.bool
@@ -51,7 +53,8 @@ class Interval(Constraint, ABC):
         obj.mono = mono
         return obj
 
-    def __init__(self, ll: float, ul: float, left_open: bool, right_open: bool, mono: int, order: int):
+    def __init__(self, ll: float, ul: float, left_open: bool, right_open: bool,
+                 mono: int, order: int):
         super().__init__(order)
 
     def get_filter(self, x: Iterable):
@@ -69,7 +72,8 @@ class IntervalOO(Interval):
 
     def get_filter(self, x: Iterable) -> np.ndarray:
         z = np.ma.masked_invalid(x)
-        return np.ma.filled(np.ma.greater(z, self.ll) & np.ma.less(z, self.ul), False)
+        return np.ma.filled(np.ma.greater(z, self.ll) &
+                            np.ma.less(z, self.ul), False)
 
 
 class IntervalOC(Interval):
@@ -79,7 +83,8 @@ class IntervalOC(Interval):
 
     def get_filter(self, x: Iterable) -> np.ndarray:
         z = np.ma.masked_invalid(x)
-        return np.ma.filled(np.ma.greater(z, self.ll) & np.ma.less_equal(z, self.ul), False)
+        return np.ma.filled(np.ma.greater(z, self.ll) &
+                            np.ma.less_equal(z, self.ul), False)
 
 
 class IntervalCO(Interval):
@@ -89,7 +94,8 @@ class IntervalCO(Interval):
 
     def get_filter(self, x: Iterable) -> np.ndarray:
         z = np.ma.masked_invalid(x)
-        return np.ma.filled(np.ma.greater_equal(z, self.ll) & np.ma.less(z, self.ul), False)
+        return np.ma.filled(np.ma.greater_equal(z, self.ll) &
+                            np.ma.less(z, self.ul), False)
 
 
 class IntervalCC(Interval):
@@ -99,7 +105,8 @@ class IntervalCC(Interval):
 
     def get_filter(self, x: Iterable) -> np.ndarray:
         z = np.ma.masked_invalid(x)
-        return np.ma.filled(np.ma.greater_equal(z, self.ll) & np.ma.less_equal(z, self.ul), False)
+        return np.ma.filled(np.ma.greater_equal(z, self.ll) &
+                            np.ma.less_equal(z, self.ul), False)
 
 
 class Value(Constraint):
@@ -141,13 +148,15 @@ class FittedConstraint:
 
     def transform(self, X: np.ndarray, result: np.ndarray) -> np.ndarray:
         replace = X if self.value is None else self.value
-        # make sure to only update output vector where filter is true AND result == np.nan
+        # make sure to only update output vector where filter is true
+        # AND result == np.nan
         f = self.constraint.get_filter(X) & np.isnan(result)
         return np.where(f, replace, result)
 
 
 class Blueprint:
-    def __init__(self, constraints: List[FittedConstraint], mono: Optional[int]):
+    def __init__(self, constraints: List[FittedConstraint],
+                 mono: Optional[int]):
         self.constraints = constraints
         self.mono = mono
 
@@ -160,7 +169,8 @@ class Blueprint:
 
 
 class Constrainer(BaseEstimator, TransformerMixin):
-    """Constrainer class that transforms vector into features for constrained learning"""
+    """Constrainer class that transforms vector into features
+       for constrained learning"""
 
     def __init__(self, constraints: List[Constraint]):
         self.constraints = constraints
@@ -168,11 +178,12 @@ class Constrainer(BaseEstimator, TransformerMixin):
 
     def __str__(self):
         strings = [str(m) for m in self.constraints]
-        pos = [s.index("=>") for s in strings ]
+        pos = [s.index("=>") for s in strings]
         max_pos = max(pos)
 
         # Align based on =>
-        return "\n".join([" " * (max_pos - i) + s for s, i in zip(strings, pos)])
+        out = [" " * (max_pos - i) + s for s, i in zip(strings, pos)]
+        return "\n".join(out)
 
     @property
     def intervals(self) -> List[Interval]:
@@ -196,7 +207,8 @@ class Constrainer(BaseEstimator, TransformerMixin):
             order = self.order(desc=False if mono == 1 else True)
             ll, ul = interval.limits
 
-            # need the index order of the current interval not the original order
+            # need the index order of the current interval not the
+            # original order
             pos = self.constraints.index(interval)
             i = order[pos]
 
@@ -215,14 +227,16 @@ class Constrainer(BaseEstimator, TransformerMixin):
                 else:
                     vals.append(ul + 1 - (i - j))
 
-            # current interval gets None value to signal pass-through predictions
+            # current interval gets None value to signal pass-through
+            # predictions
             vals[pos] = None
 
-            bp = [FittedConstraint(con, val) for (con, val) in zip(self.constraints, vals)]
+            bp = list()
+            for (con, val) in zip(self.constraints, vals):
+                bp.append(FittedConstraint(con, val))
+            
             out.append(Blueprint(bp, mono))
-
         return out
-
 
     def fit(self, X):
         self.blueprint.clear()
@@ -245,7 +259,8 @@ class Constrainer(BaseEstimator, TransformerMixin):
     def transform(self, X):
         out = []
         for bp in self.blueprint:
-            # start with a vector of np.nan to fill with the transformed results
+            # start with a vector of np.nan to fill with the
+            # transformed results
             res = np.full_like(X, np.nan)
             for cons in bp:
                 print(cons)
@@ -267,9 +282,9 @@ if __name__ == '__main__':
 
     tf = Constrainer([u, v, w, x])
     z = np.arange(-1, 20, 1, dtype=np.float)
-    z = np.concatenate([z, [np.nan]]).reshape(-1,1)
+    z = np.concatenate([z, [np.nan]]).reshape(-1, 1)
     tf.fit(z)
     print(np.hstack([z, tf.transform(z)]))
     # tf._generate_blueprint()
-    #print(tf.fit_transform(z))
-
+    # print(tf.fit_transform(z))
+    ioo = IntervalOO()
