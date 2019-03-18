@@ -4,6 +4,7 @@ from sklearn.base import BaseEstimator, TransformerMixin
 from sklearn.utils import check_array
 from abc import ABC, abstractmethod
 from util import indices
+from itertools import chain
 
 
 class Constraint(ABC):
@@ -174,7 +175,8 @@ class Constrainer(BaseEstimator, TransformerMixin):
 
     def __init__(self, constraints: List[Constraint]):
         self.constraints = constraints
-        self.blueprint: List[List[FittedConstraint]] = list()
+        self.blueprints: List[List[FittedConstraint]] = list()
+        self.fitted = False
 
     def __str__(self):
         strings = [str(m) for m in self.constraints]
@@ -188,6 +190,15 @@ class Constrainer(BaseEstimator, TransformerMixin):
     @property
     def intervals(self) -> List[Interval]:
         return [i for i in self.constraints if isinstance(i, Interval)]
+
+    @property
+    def mono(self) -> List[int]:
+        m = {-1: (-1, -1), 0: (-1, 1), 1: (1, 1)}
+        if ~self.fitted:
+            out = [m[i.mono] for i in self.intervals]
+        else:
+            out = [bp.mono for bp in self.blueprints]
+        return list(chain.from_iterable(out))
 
     def order(self, desc=False):
         mul = -1 if desc else 1
@@ -234,12 +245,12 @@ class Constrainer(BaseEstimator, TransformerMixin):
             bp = list()
             for (con, val) in zip(self.constraints, vals):
                 bp.append(FittedConstraint(con, val))
-            
+
             out.append(Blueprint(bp, mono))
         return out
 
     def fit(self, X):
-        self.blueprint.clear()
+        self.blueprints.clear()
         check_array(X, accept_sparse=False, force_all_finite=False)
 
         intervals = self.intervals
@@ -247,18 +258,21 @@ class Constrainer(BaseEstimator, TransformerMixin):
         # check if there are interval constraints
         if len(intervals) > 0:
             for interval in intervals:
-                self.blueprint += self.fit_interval(interval)
+                self.blueprints += self.fit_interval(interval)
         else:
+            # TODO: create method that outputs a vector when NO intervals are
+            # specified only single values or missing
             bp = []
             for con, val in zip(self.constraints, self.order()):
                 bp.append(FittedConstraint(con, val))
-            self.blueprint += [Blueprint(bp, None)]
+            self.blueprints += [Blueprint(bp, None)]
 
+        self.fit = True
         return self
 
     def transform(self, X):
         out = []
-        for bp in self.blueprint:
+        for bp in self.blueprints:
             # start with a vector of np.nan to fill with the
             # transformed results
             res = np.full_like(X, np.nan)
@@ -281,10 +295,16 @@ if __name__ == '__main__':
     print(type(w.get_filter([1, 10])))
 
     tf = Constrainer([u, v, w, x])
+    tf = Constrainer([u, v])
+
+    print(tf.mono)
+    
     z = np.arange(-1, 20, 1, dtype=np.float)
     z = np.concatenate([z, [np.nan]]).reshape(-1, 1)
+    
     tf.fit(z)
     print(np.hstack([z, tf.transform(z)]))
+
+    print(tf.mono)
     # tf._generate_blueprint()
     # print(tf.fit_transform(z))
-    ioo = IntervalOO()

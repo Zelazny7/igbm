@@ -1,6 +1,7 @@
 from unittest import TestCase
-from util import *
+from util import indices
 import numpy as np
+
 
 class UtilTest(TestCase):
     def test_indices(self):
@@ -17,5 +18,3 @@ class UtilTest(TestCase):
         self.assertEqual(indices([2, 2, 2, -1, -1]), [1, 1, 1, 0, 0])
 
         self.assertEqual(indices(np.array([2, 2, 2, -1, -1])), [1, 1, 1, 0, 0])
-
-
