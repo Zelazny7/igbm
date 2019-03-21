@@ -1,5 +1,5 @@
 import numpy as np
-from typing import Iterable, Any, Optional, List
+from typing import Iterable, Any, Optional, List, OrderedDict
 from sklearn.base import BaseEstimator, TransformerMixin
 from sklearn.utils import check_array
 from abc import ABC, abstractmethod
@@ -22,8 +22,8 @@ class Constraint(ABC):
         pass
 
 
-class Interval(Constraint, ABC):
-    """Base class and factory for interval constraints
+class BaseInterval(Constraint, ABC):
+    """Base class for interval constraints
 
     :param float ll: Lower limit of interval
     :param float ul: Upper limit of interval
@@ -32,31 +32,14 @@ class Interval(Constraint, ABC):
     :param int mono: Monotonicity constraint of the interval in {-1,0,1}
     :param int order: Absolute ordering w.r.t. target variable treatment
     """
-    def __new__(cls, ll: float, ul: float, left_open: bool, right_open: bool,
-                mono: int = 0, order: int = 0):
-
-        if mono not in {-1, 0, 1}:
-            raise ValueError(f"Invalid argument mono: {mono}")
-
-        if left_open:
-            if right_open:
-                obj = super(Interval, cls).__new__(IntervalOO)
-            else:
-                obj = super(Interval, cls).__new__(IntervalOC)
-        else:
-            if right_open:
-                obj = super(Interval, cls).__new__(IntervalCO)
-            else:
-                obj = super(Interval, cls).__new__(IntervalCC)
-
-        obj.ll = ll
-        obj.ul = ul
-        obj.mono = mono
-        return obj
-
-    def __init__(self, ll: float, ul: float, left_open: bool, right_open: bool,
-                 mono: int, order: int):
-        super().__init__(order)
+    def __init__(self, ll: float, ul: float, left_open: bool,
+                 right_open: bool, mono: int = 0, order: int = 0):
+        super().__init__(order=order)
+        self.ll = ll
+        self.ul = ul
+        self.left_open = left_open
+        self.right_open = right_open
+        self.mono = mono
 
     def get_filter(self, x: Iterable):
         raise NotImplementedError()
@@ -66,7 +49,38 @@ class Interval(Constraint, ABC):
         return self.ll, self.ul
 
 
-class IntervalOO(Interval):
+def Interval(ll: float, ul: float, left_open: bool, right_open: bool,
+             mono: int = 0, order: int = 0):
+    """Factory for interval constraints
+
+    :param float ll: Lower limit of interval
+    :param float ul: Upper limit of interval
+    :param bool left_open: If True the left side of the interval is open
+    :param bool right_open: If True the right side of the interval is open
+    :param int mono: Monotonicity constraint of the interval in {-1,0,1}
+    :param int order: Absolute ordering w.r.t. target variable treatment
+    """
+    if mono not in {-1, 0, 1}:
+        raise ValueError(f"Invalid argument mono: {mono}")
+
+    if left_open:
+        if right_open:
+            obj = IntervalOO(ll, ul, left_open, right_open, mono, order)
+        else:
+            obj = IntervalOC(ll, ul, left_open, right_open, mono, order)
+    else:
+        if right_open:
+            obj = IntervalCO(ll, ul, left_open, right_open, mono, order)
+        else:
+            obj = IntervalCC(ll, ul, left_open, right_open, mono, order)
+
+    return obj
+
+
+class IntervalOO(BaseInterval):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
     def __str__(self):
         rng = f"({self.ll}, {self.ul})"
         return f"{self.order:5} | {rng:<20}"
@@ -77,7 +91,10 @@ class IntervalOO(Interval):
                             np.ma.less(z, self.ul), False)
 
 
-class IntervalOC(Interval):
+class IntervalOC(BaseInterval):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
     def __str__(self):
         rng = f"({self.ll}, {self.ul}]"
         return f"{self.order:5} | {rng:<20}"
@@ -88,7 +105,10 @@ class IntervalOC(Interval):
                             np.ma.less_equal(z, self.ul), False)
 
 
-class IntervalCO(Interval):
+class IntervalCO(BaseInterval):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
     def __str__(self):
         rng = f"[{self.ll}, {self.ul})"
         return f"{self.order:5} | {rng:<20}"
@@ -99,7 +119,10 @@ class IntervalCO(Interval):
                             np.ma.less(z, self.ul), False)
 
 
-class IntervalCC(Interval):
+class IntervalCC(BaseInterval):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
     def __str__(self):
         rng = f"[{self.ll}, {self.ul}]"
         return f"{self.order:5} | {rng:<20}"
@@ -188,8 +211,8 @@ class Constrainer(BaseEstimator, TransformerMixin):
         return "\n".join(out)
 
     @property
-    def intervals(self) -> List[Interval]:
-        return [i for i in self.constraints if isinstance(i, Interval)]
+    def intervals(self) -> List[BaseInterval]:
+        return [i for i in self.constraints if isinstance(i, BaseInterval)]
 
     @property
     def mono(self) -> List[int]:
@@ -251,8 +274,6 @@ class Constrainer(BaseEstimator, TransformerMixin):
 
     def fit(self, X):
         self.blueprints.clear()
-        check_array(X, accept_sparse=False, force_all_finite=False)
-
         intervals = self.intervals
 
         # check if there are interval constraints
@@ -260,24 +281,30 @@ class Constrainer(BaseEstimator, TransformerMixin):
             for interval in intervals:
                 self.blueprints += self.fit_interval(interval)
         else:
-            # TODO: create method that outputs a vector when NO intervals are
-            # specified only single values or missing
             bp = []
             for con, val in zip(self.constraints, self.order()):
                 bp.append(FittedConstraint(con, val))
             self.blueprints += [Blueprint(bp, None)]
 
-        self.fit = True
+        self.fitted = True
         return self
 
     def transform(self, X):
+        check_array(X, accept_sparse=False, force_all_finite=False)
+
+        if hasattr(X, "iloc"): # DataFrame
+            res = [self._transform(X.iloc[:, i]) for i in range(X.shape[1])]
+        else:
+            res = [self._transform(X[:,i]) for i in range(X.shape[1])]
+        return np.hstack(res)
+
+    def _transform(self, X):
         out = []
         for bp in self.blueprints:
             # start with a vector of np.nan to fill with the
             # transformed results
             res = np.full_like(X, np.nan)
             for cons in bp:
-                print(cons)
                 res = cons.transform(X, res)
             out.append(res.reshape(-1, 1))
 
@@ -298,10 +325,10 @@ if __name__ == '__main__':
     tf = Constrainer([u, v])
 
     print(tf.mono)
-    
+
     z = np.arange(-1, 20, 1, dtype=np.float)
     z = np.concatenate([z, [np.nan]]).reshape(-1, 1)
-    
+
     tf.fit(z)
     print(np.hstack([z, tf.transform(z)]))
 
